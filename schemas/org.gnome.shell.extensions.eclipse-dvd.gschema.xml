@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.eclipse-dvd" path="/org/gnome/shell/extensions/eclipse-dvd/">
+    
+    <key name="display-text" type="s">
+      <default>"ECLIPSE"</default>
+      <summary>Display Text</summary>
+      <description>The text that will bounce around the screen</description>
+    </key>
+    
+    <key name="font-size" type="i">
+      <default>80</default>
+      <range min="20" max="200"/>
+      <summary>Font Size</summary>
+      <description>Size of the bouncing text in pixels</description>
+    </key>
+    
+    <key name="show-glow" type="b">
+      <default>true</default>
+      <summary>Show Glow Effect</summary>
+      <description>Whether to show a glow effect around the text</description>
+    </key>
+    
+    <key name="bounce-speed" type="i">
+      <default>150</default>
+      <range min="50" max="500"/>
+      <summary>Bounce Speed</summary>
+      <description>Speed of the bouncing text in pixels per second</description>
+    </key>
+    
+    <key name="color-scheme" type="s">
+      <default>"classic"</default>
+      <choices>
+        <choice value="classic"/>
+        <choice value="pastel"/>
+        <choice value="neon"/>
+        <choice value="monochrome"/>
+      </choices>
+      <summary>Color Scheme</summary>
+      <description>Color palette used for the bouncing text</description>
+    </key>
+    
+    <key name="idle-time" type="i">
+      <default>120</default>
+      <range min="10" max="3600"/>
+      <summary>Idle Time</summary>
+      <description>Number of seconds of inactivity before screensaver activates</description>
+    </key>
+    
+  </schema>
+</schemalist>

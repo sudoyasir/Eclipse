@@ -1,0 +1,12 @@
+{
+  "name": "Eclipse DVD Screensaver",
+  "description": "Classic DVD-style bouncing text screensaver that activates after idle time. Customizable text, colors, speed, and activation timing. Dismiss with any key or mouse.",
+  "uuid": "eclipse-dvd-screensaver@sudoyasir.github.com",
+  "shell-version": [
+    "45",
+    "46"
+  ],
+  "version": 1,
+  "url": "https://github.com/sudoyasir/Eclipse",
+  "settings-schema": "org.gnome.shell.extensions.eclipse-dvd"
+}
