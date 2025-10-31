@@ -364,6 +364,12 @@ export default class EclipseDVDExtension extends Extension {
         const fps = 60;
         const interval = 1000 / fps;
         
+        // Clear existing timeout if any
+        if (this._timeout) {
+            GLib.source_remove(this._timeout);
+            this._timeout = null;
+        }
+        
         this._timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, interval, () => {
             this._update(1 / fps);
             return GLib.SOURCE_CONTINUE;
