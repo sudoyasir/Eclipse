@@ -2,6 +2,16 @@
 <schemalist>
   <schema id="org.gnome.shell.extensions.eclipse-dvd" path="/org/gnome/shell/extensions/eclipse-dvd/">
     
+    <key name="display-mode" type="s">
+      <default>"text"</default>
+      <choices>
+        <choice value="text"/>
+        <choice value="clock"/>
+      </choices>
+      <summary>Display Mode</summary>
+      <description>Whether to show custom text or a digital clock</description>
+    </key>
+    
     <key name="display-text" type="s">
       <default>"ECLIPSE"</default>
       <summary>Display Text</summary>
@@ -45,6 +55,22 @@
       <range min="10" max="3600"/>
       <summary>Idle Time</summary>
       <description>Number of seconds of inactivity before screensaver activates</description>
+    </key>
+    
+    <key name="clock-format" type="s">
+      <default>"24h"</default>
+      <choices>
+        <choice value="24h"/>
+        <choice value="12h"/>
+      </choices>
+      <summary>Clock Format</summary>
+      <description>Use 24-hour or 12-hour (AM/PM) time format</description>
+    </key>
+    
+    <key name="show-seconds" type="b">
+      <default>true</default>
+      <summary>Show Seconds</summary>
+      <description>Whether to show seconds in clock mode</description>
     </key>
     
   </schema>
