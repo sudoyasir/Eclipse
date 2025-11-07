@@ -13,6 +13,7 @@ export default class EclipseDVDExtension extends Extension {
         this._actor = null;
         this._label = null;
         this._timeout = null;
+        this._clockTimeout = null;
         this._idleMonitor = null;
         this._idleWatchId = null;
         this._settings = null;
@@ -49,6 +50,12 @@ export default class EclipseDVDExtension extends Extension {
         if (this._timeout) {
             GLib.Source.remove(this._timeout);
             this._timeout = null;
+        }
+        
+        // Clean up clock timeout
+        if (this._clockTimeout) {
+            GLib.source_remove(this._clockTimeout);
+            this._clockTimeout = null;
         }
         
         this._settings = null;
@@ -172,6 +179,9 @@ export default class EclipseDVDExtension extends Extension {
             this._timeout = null;
         }
         
+        // Stop clock update
+        this._stopClockUpdate();
+        
         // Destroy UI
         if (this._actor) {
             this._actor.destroy();
@@ -283,7 +293,8 @@ export default class EclipseDVDExtension extends Extension {
         });
         
         // Create label
-        const text = this._settings.get_string('display-text');
+        const displayMode = this._settings.get_string('display-mode');
+        const text = displayMode === 'clock' ? this._getCurrentTime() : this._settings.get_string('display-text');
         const fontSize = this._settings.get_int('font-size');
         const showGlow = this._settings.get_boolean('show-glow');
         
@@ -293,6 +304,11 @@ export default class EclipseDVDExtension extends Extension {
         });
         
         this._actor.add_child(this._label);
+        
+        // Start clock update timer if in clock mode
+        if (displayMode === 'clock') {
+            this._startClockUpdate();
+        }
         
         // Add to Main UI above the overlay
         Main.layoutManager.addChrome(this._actor, {
@@ -343,6 +359,57 @@ export default class EclipseDVDExtension extends Extension {
         }
         
         return style;
+    }
+
+    _getCurrentTime() {
+        const now = new Date();
+        const clockFormat = this._settings.get_string('clock-format');
+        const showSeconds = this._settings.get_boolean('show-seconds');
+        
+        let hours = now.getHours();
+        let ampm = '';
+        
+        // Handle 12-hour format
+        if (clockFormat === '12h') {
+            ampm = hours >= 12 ? ' PM' : ' AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12; // 0 should be 12
+        }
+        
+        const hoursStr = String(hours).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        
+        let timeStr = `${hoursStr}:${minutes}`;
+        
+        if (showSeconds) {
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            timeStr += `:${seconds}`;
+        }
+        
+        return timeStr + ampm;
+    }
+
+    _startClockUpdate() {
+        // Clear existing clock timeout if any
+        if (this._clockTimeout) {
+            GLib.source_remove(this._clockTimeout);
+            this._clockTimeout = null;
+        }
+        
+        // Update clock every second
+        this._clockTimeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+            if (this._label && this._settings.get_string('display-mode') === 'clock') {
+                this._label.text = this._getCurrentTime();
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _stopClockUpdate() {
+        if (this._clockTimeout) {
+            GLib.source_remove(this._clockTimeout);
+            this._clockTimeout = null;
+        }
     }
 
     _updatePosition() {
@@ -430,6 +497,12 @@ export default class EclipseDVDExtension extends Extension {
     }
 
     _connectSettings() {
+        this._settings.connect('changed::display-mode', () => {
+            if (this._isActive) {
+                this._recreateLabel();
+            }
+        });
+        
         this._settings.connect('changed::display-text', () => {
             if (this._isActive) {
                 this._recreateLabel();
@@ -462,6 +535,24 @@ export default class EclipseDVDExtension extends Extension {
             this._loadColors();
             if (this._isActive) {
                 this._updateColor();
+            }
+        });
+        
+        this._settings.connect('changed::clock-format', () => {
+            if (this._isActive && this._settings.get_string('display-mode') === 'clock') {
+                // Update clock display immediately with new format
+                if (this._label) {
+                    this._label.text = this._getCurrentTime();
+                }
+            }
+        });
+        
+        this._settings.connect('changed::show-seconds', () => {
+            if (this._isActive && this._settings.get_string('display-mode') === 'clock') {
+                // Update clock display immediately with/without seconds
+                if (this._label) {
+                    this._label.text = this._getCurrentTime();
+                }
             }
         });
         

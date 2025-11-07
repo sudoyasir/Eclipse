@@ -15,10 +15,37 @@ export default class EclipseDVDPreferences extends ExtensionPreferences {
         });
         window.add(page);
         
+        // Display Mode Group
+        const modeGroup = new Adw.PreferencesGroup({
+            title: 'Display Mode',
+            description: 'Choose what to display',
+        });
+        page.add(modeGroup);
+        
+        // Display Mode ComboRow
+        const displayModeRow = new Adw.ComboRow({
+            title: 'Mode',
+            subtitle: 'Show custom text or digital clock',
+            model: new Gtk.StringList({
+                strings: ['Custom Text', 'Digital Clock'],
+            }),
+        });
+        
+        const modes = ['text', 'clock'];
+        const currentMode = settings.get_string('display-mode');
+        displayModeRow.set_selected(modes.indexOf(currentMode));
+        
+        displayModeRow.connect('notify::selected', () => {
+            const index = displayModeRow.get_selected();
+            settings.set_string('display-mode', modes[index]);
+        });
+        
+        modeGroup.add(displayModeRow);
+        
         // Text Settings Group
         const textGroup = new Adw.PreferencesGroup({
             title: 'Text Settings',
-            description: 'Customize the bouncing text',
+            description: 'Customize the bouncing text (only applies in Text mode)',
         });
         page.add(textGroup);
         
@@ -66,6 +93,47 @@ export default class EclipseDVDPreferences extends ExtensionPreferences {
         glowRow.add_suffix(glowSwitch);
         glowRow.activatable_widget = glowSwitch;
         textGroup.add(glowRow);
+        
+        // Clock Settings Group
+        const clockGroup = new Adw.PreferencesGroup({
+            title: 'Clock Settings',
+            description: 'Customize the digital clock (only applies in Clock mode)',
+        });
+        page.add(clockGroup);
+        
+        // Clock Format ComboRow
+        const clockFormatRow = new Adw.ComboRow({
+            title: 'Time Format',
+            subtitle: 'Choose 24-hour or 12-hour (AM/PM) format',
+            model: new Gtk.StringList({
+                strings: ['24-Hour', '12-Hour (AM/PM)'],
+            }),
+        });
+        
+        const formats = ['24h', '12h'];
+        const currentFormat = settings.get_string('clock-format');
+        clockFormatRow.set_selected(formats.indexOf(currentFormat));
+        
+        clockFormatRow.connect('notify::selected', () => {
+            const index = clockFormatRow.get_selected();
+            settings.set_string('clock-format', formats[index]);
+        });
+        
+        clockGroup.add(clockFormatRow);
+        
+        // Show Seconds Toggle
+        const secondsRow = new Adw.ActionRow({
+            title: 'Show Seconds',
+            subtitle: 'Display seconds in the clock',
+        });
+        const secondsSwitch = new Gtk.Switch({
+            active: settings.get_boolean('show-seconds'),
+            valign: Gtk.Align.CENTER,
+        });
+        settings.bind('show-seconds', secondsSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
+        secondsRow.add_suffix(secondsSwitch);
+        secondsRow.activatable_widget = secondsSwitch;
+        clockGroup.add(secondsRow);
         
         // Screensaver Settings Group
         const screensaverGroup = new Adw.PreferencesGroup({
