@@ -1,7 +1,6 @@
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -9,27 +8,27 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 export default class EclipseDVDExtension extends Extension {
     constructor(metadata) {
         super(metadata);
-        this._overlay = null;
-        this._actor = null;
-        this._label = null;
+        this._items = [];
+
         this._timeout = null;
         this._clockTimeout = null;
         this._idleMonitor = null;
         this._idleWatchId = null;
         this._settings = null;
         this._isActive = false;
-        
-        // Bouncing state
-        this._x = 0;
-        this._y = 0;
-        this._velocityX = 0;
-        this._velocityY = 0;
+
         this._colors = [];
-        this._colorIndex = 0;
         this._cornerHits = 0;
         
         // Input tracking
         this._capturedEventId = null;
+
+        // Cursor tracking
+        this._cursorTracker = null;
+        this._cursorWasHidden = false;
+        this._cursorInhibited = false;
+        this._seat = null;
+        this._focusInhibited = false;
     }
 
     enable() {
@@ -41,37 +40,35 @@ export default class EclipseDVDExtension extends Extension {
 
     disable() {
         this._hideScreensaver();
-        
+
         if (this._idleWatchId && this._idleMonitor) {
             this._idleMonitor.remove_watch(this._idleWatchId);
             this._idleWatchId = null;
         }
-        
+
         if (this._timeout) {
             GLib.Source.remove(this._timeout);
             this._timeout = null;
         }
-        
+
         // Clean up clock timeout
         if (this._clockTimeout) {
             GLib.source_remove(this._clockTimeout);
             this._clockTimeout = null;
         }
-        
+
         this._settings = null;
         this._idleMonitor = null;
     }
 
     _setupIdleMonitor() {
         try {
+            // https://gjs-docs.gnome.org/meta17~17/meta.backend#method-get_core_idle_monitor
             this._idleMonitor = global.backend.get_core_idle_monitor();
-        } catch (e) {
-            try {
-                this._idleMonitor = Meta.IdleMonitor.get_core();
-            } catch (e2) {
-                console.error('Eclipse: Failed to get idle monitor');
-                return;
-            }
+        }
+        catch (e) {
+            console.error('Eclipse: Failed to get idle monitor');
+            return;
         }
         this._updateIdleWatch();
     }
@@ -79,25 +76,28 @@ export default class EclipseDVDExtension extends Extension {
     _updateIdleWatch() {
         if (this._idleWatchId && this._idleMonitor) {
             try {
+                // https://gjs-docs.gnome.org/meta17~17/meta.idlemonitor#method-remove_watch
                 this._idleMonitor.remove_watch(this._idleWatchId);
-            } catch (e) {
+            }
+            catch (e) {
                 // Silently fail
             }
             this._idleWatchId = null;
         }
-        
+
         if (!this._idleMonitor) {
             return;
         }
-        
+
         const idleTimeSeconds = this._settings.get_int('idle-time');
         const idleTimeMs = idleTimeSeconds * 1000;
-        
+
         try {
             this._idleWatchId = this._idleMonitor.add_idle_watch(idleTimeMs, () => {
                 this._showScreensaver();
             });
-        } catch (e) {
+        }
+        catch (e) {
             console.error('Eclipse: Failed to add idle watch');
         }
     }
@@ -106,72 +106,88 @@ export default class EclipseDVDExtension extends Extension {
         if (this._isActive) {
             return;
         }
-        
         this._isActive = true;
-        
-        // Create fullscreen overlay
-        this._createOverlay();
-        
-        // Create the bouncing label
-        this._createLabel();
-        
-        // Start animation
+
+        // Create fullscreen overlay for each monitor
+        this._createOverlays();
+
+        // Create the bouncing label for each monitor
+        this._createLabels();
+
+        // Start animation for each monitor
         this._startAnimation();
-        
+
         // Capture all input to detect user activity
         this._captureInput();
-        
-        // Fade in smoothly
-        this._overlay.opacity = 0;
-        this._actor.opacity = 0;
-        
-        this._overlay.ease({
-            opacity: 255,
-            duration: 500,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-        });
-        
-        this._actor.ease({
-            opacity: 255,
-            duration: 800,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-        });
+
+        // Hide cursor when screensaver active
+        this._hideCursor();
+
+        // Fade in smoothly for each monitor
+        for (const item of this._items) {
+            item.overlay.opacity = 0;
+            item.actor.opacity = 0;
+
+            item.overlay.ease({
+                opacity: 255,
+                duration: 500,
+                // https://gjs-docs.gnome.org/clutter17~17/clutter.animationmode
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+
+            item.actor.ease({
+                opacity: 255,
+                duration: 800,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+        }
     }
 
     _hideScreensaver() {
         if (!this._isActive) {
             return;
         }
-        
         this._isActive = false;
-        
+
         // Remove input capture immediately
         if (this._capturedEventId) {
             global.stage.disconnect(this._capturedEventId);
             this._capturedEventId = null;
         }
+
+        // Restore the system cursor
+        this._showCursor();
         
-        // Fade out smoothly
-        if (this._overlay && this._actor) {
-            this._overlay.ease({
-                opacity: 0,
-                duration: 400,
-                mode: Clutter.AnimationMode.EASE_IN_QUAD,
-                onComplete: () => {
-                    this._cleanupScreensaver();
-                }
-            });
-            
-            this._actor.ease({
-                opacity: 0,
-                duration: 300,
-                mode: Clutter.AnimationMode.EASE_IN_QUAD,
-            });
-        } else {
+        if (this._items.length > 0) {
+            // Fade out smoothly for each monitor then clean up
+            let remaining = this._items.length;
+
+            for (const item of this._items) {
+                item.overlay.ease({
+                    opacity: 0,
+                    duration: 400,
+                    // https://gjs-docs.gnome.org/clutter17~17/clutter.animationmode
+                    mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                    onComplete: () => {
+                        remaining -= 1;
+                        if (remaining <= 0) {
+                            this._cleanupScreensaver();
+                        }
+                    },
+                });
+
+                item.actor.ease({
+                    opacity: 0,
+                    duration: 300,
+                    mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                });
+            }
+        }
+        else {
             this._cleanupScreensaver();
         }
     }
-    
+
     _cleanupScreensaver() {
         // Stop animation
         if (this._timeout) {
@@ -182,49 +198,66 @@ export default class EclipseDVDExtension extends Extension {
         // Stop clock update
         this._stopClockUpdate();
         
-        // Destroy UI
-        if (this._actor) {
-            this._actor.destroy();
-            this._actor = null;
-            this._label = null;
+        // Destroy UI for each monitor
+        for (const item of this._items) {
+            if (item.actor) {
+                item.actor.destroy();
+                item.actor = null;
+                item.label = null;
+            }
+            if (item.overlay) {
+                item.overlay.destroy();
+                item.overlay = null;
+            }
         }
-        
-        if (this._overlay) {
-            this._overlay.destroy();
-            this._overlay = null;
-        }
-        
+        this._items = [];
+
         // Reset idle monitor
         this._updateIdleWatch();
     }
 
-    _createOverlay() {
-        // Create black fullscreen overlay
-        this._overlay = new St.Widget({
-            style_class: 'eclipse-dvd-overlay',
-            style: 'background-color: black;',
-            reactive: true,
-            can_focus: true,
-            track_hover: true,
-            x: 0,
-            y: 0,
-        });
-        
-        const monitor = Main.layoutManager.primaryMonitor;
-        this._overlay.set_size(monitor.width, monitor.height);
-        
-        Main.layoutManager.addChrome(this._overlay, {
-            affectsStruts: false,
-            trackFullscreen: false,
-        });
-        
-        this._overlay.show();
+    _createOverlays() {
+        // Create black fullscreen overlay for each monitor
+        const monitors = Main.layoutManager.monitors;
+
+        for (const monitor of monitors) {
+            const overlay = new St.Widget({
+                style_class: 'eclipse-dvd-overlay',
+                style: 'background-color: black;',
+                reactive: true,
+                can_focus: true,
+                track_hover: true,
+            });
+
+            overlay.set_position(monitor.x, monitor.y);
+            overlay.set_size(monitor.width, monitor.height);
+
+            Main.layoutManager.addChrome(overlay, {
+                affectsStruts: false,
+                trackFullscreen: false,
+            });
+
+            overlay.show();
+
+            this._items.push({
+                overlay,
+                actor: null,
+                label: null,
+                monitorIndex: monitor.index,
+                x: 0,
+                y: 0,
+                velocityX: 0,
+                velocityY: 0,
+                colorIndex: Math.floor(Math.random() * this._colors.length),
+            });
+        }
     }
 
     _captureInput() {
         // Capture any keyboard or mouse event to hide screensaver
         this._capturedEventId = global.stage.connect('captured-event', (actor, event) => {
             const type = event.type();
+            // TODO: find why keyboard events not detected : https://gjs-docs.gnome.org/clutter17~17/clutter.eventtype#default-key_press
             if (type === Clutter.EventType.KEY_PRESS ||
                 type === Clutter.EventType.BUTTON_PRESS ||
                 type === Clutter.EventType.MOTION) {
@@ -237,118 +270,132 @@ export default class EclipseDVDExtension extends Extension {
 
     _loadColors() {
         const colorScheme = this._settings.get_string('color-scheme');
-        
+
         if (colorScheme === 'classic') {
             this._colors = [
-                [255, 51, 76],    // Red
-                [51, 255, 76],    // Green
-                [76, 127, 255],   // Blue
-                [255, 204, 51],   // Yellow
-                [255, 102, 204],  // Pink
-                [102, 255, 229],  // Cyan
-                [204, 102, 255],  // Purple
-                [255, 153, 51],   // Orange
-            ];
-        } else if (colorScheme === 'pastel') {
-            this._colors = [
-                [255, 179, 186],  // Pastel Red
-                [186, 255, 201],  // Pastel Green
-                [186, 225, 255],  // Pastel Blue
-                [255, 243, 186],  // Pastel Yellow
-                [255, 209, 229],  // Pastel Pink
-                [209, 255, 243],  // Pastel Cyan
-                [229, 209, 255],  // Pastel Purple
-                [255, 223, 186],  // Pastel Orange
-            ];
-        } else if (colorScheme === 'neon') {
-            this._colors = [
-                [255, 0, 102],    // Neon Pink
-                [0, 255, 102],    // Neon Green
-                [0, 102, 255],    // Neon Blue
-                [255, 255, 0],    // Neon Yellow
-                [255, 0, 255],    // Neon Magenta
-                [0, 255, 255],    // Neon Cyan
-                [255, 102, 0],    // Neon Orange
-                [204, 0, 255],    // Neon Purple
-            ];
-        } else if (colorScheme === 'monochrome') {
-            this._colors = [
-                [255, 255, 255],  // White
-                [220, 220, 220],  // Light Gray
-                [180, 180, 180],  // Gray
-                [140, 140, 140],  // Dark Gray
+                [255, 51, 76],    // Red rgb(255, 51, 76)
+                [51, 255, 76],    // Green rgb(51, 255, 76)
+                [76, 127, 255],   // Blue rgb(76, 127, 255)
+                [255, 204, 51],   // Yellow rgb(255, 204, 51)
+                [255, 102, 204],  // Pink rgb(255, 102, 204)
+                [102, 255, 229],  // Cyan rgb(102, 255, 229)
+                [204, 102, 255],  // Purple rgb(204, 102, 255)
+                [255, 153, 51],   // Orange rgb(255, 153, 51)
             ];
         }
-        
-        this._colorIndex = Math.floor(Math.random() * this._colors.length);
+        else if (colorScheme === 'pastel') {
+            this._colors = [
+                [255, 179, 186],  // Pastel Red rgb(255, 179, 186)
+                [186, 255, 201],  // Pastel Green rgb(186, 255, 201)
+                [186, 225, 255],  // Pastel Blue rgb(186, 225, 255)
+                [255, 243, 186],  // Pastel Yellow rgb(255, 243, 186)
+                [255, 209, 229],  // Pastel Pink rgb(255, 209, 229)
+                [209, 255, 243],  // Pastel Cyan rgb(209, 255, 243)
+                [229, 209, 255],  // Pastel Purple rgb(229, 209, 255)
+                [255, 223, 186],  // Pastel Orange rgb(255, 223, 186)
+            ];
+        }
+        else if (colorScheme === 'neon') {
+            this._colors = [
+                [255, 0, 102],    // Neon Pink rgb(255, 0, 102)
+                [0, 255, 102],    // Neon Green rgb(0, 255, 102)
+                [0, 102, 255],    // Neon Blue rgb(0, 102, 255)
+                [255, 255, 0],    // Neon Yellow rgb(255, 255, 0)
+                [255, 0, 255],    // Neon Magenta rgb(255, 0, 255)
+                [0, 255, 255],    // Neon Cyan rgb(0, 255, 255)
+                [255, 102, 0],    // Neon Orange rgb(255, 102, 0)
+                [204, 0, 255],    // Neon Purple rgb(204, 0, 255)
+            ];
+        }
+        else if (colorScheme === 'monochrome') {
+            this._colors = [
+                [255, 255, 255],  // White rgb(255, 255, 255)
+                [220, 220, 220],  // Light Gray rgb(220, 220, 220)
+                [180, 180, 180],  // Gray rgb(180, 180, 180)
+                [140, 140, 140],  // Dark Gray rgb(140, 140, 140)
+            ];
+        }
     }
 
-    _createLabel() {
-        // Create container
-        this._actor = new St.Widget({
-            style_class: 'eclipse-dvd-container',
-            reactive: false,
-            can_focus: false,
-            track_hover: false,
-        });
-        
-        // Create label
+    _createLabels() {
+        // Create bouncing label for each monitor
         const displayMode = this._settings.get_string('display-mode');
         const text = displayMode === 'clock' ? this._getCurrentTime() : this._settings.get_string('display-text');
+        // TODO: Add custom font settings ?
         const fontSize = this._settings.get_int('font-size');
         const showGlow = this._settings.get_boolean('show-glow');
-        
-        this._label = new St.Label({
-            text: text,
-            style: this._getLabelStyle(fontSize, showGlow),
-        });
-        
-        this._actor.add_child(this._label);
-        
+
+        for (const item of this._items) {
+            // Create container
+            const actor = new St.Widget({
+                style_class: 'eclipse-dvd-container',
+                reactive: false,
+                can_focus: false,
+                track_hover: false,
+            });
+
+            const label = new St.Label({
+                text: text,
+                style: this._getLabelStyle(fontSize, showGlow, item.colorIndex),
+            });
+
+            actor.add_child(label);
+
+            // Add to Main UI above the overlay
+            Main.layoutManager.addChrome(actor, {
+                affectsStruts: false,
+                trackFullscreen: false,
+            });
+
+            item.actor = actor;
+            item.label = label;
+        }
+
         // Start clock update timer if in clock mode
         if (displayMode === 'clock') {
             this._startClockUpdate();
         }
-        
-        // Add to Main UI above the overlay
-        Main.layoutManager.addChrome(this._actor, {
-            affectsStruts: false,
-            trackFullscreen: false,
-        });
-        
-        // Initialize random position and velocity
-        const monitor = Main.layoutManager.primaryMonitor;
-        
-        // Wait for layout to get actual dimensions
+
+        // Wait for layout to get actual dimensions then initialize with random positions and velocities
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            const width = this._label.width || 200;
-            const height = this._label.height || 80;
-            
-            this._x = Math.random() * (monitor.width - width);
-            this._y = Math.random() * (monitor.height - height);
-            
-            const speed = this._settings.get_int('bounce-speed');
-            this._velocityX = (speed + Math.random() * 50) * (Math.random() > 0.5 ? 1 : -1);
-            this._velocityY = (speed + Math.random() * 50) * (Math.random() > 0.5 ? 1 : -1);
-            
-            this._updatePosition();
-            this._updateColor();
-            
+            const monitors = Main.layoutManager.monitors;
+
+            for (const item of this._items) {
+                const monitor = monitors.find(m => m.index === item.monitorIndex);
+                if (!monitor || !item.label) {
+                    continue;
+                }
+
+                const width = item.label.width || 200;
+                const height = item.label.height || 80;
+
+                item.x = Math.random() * Math.max(0, monitor.width - width);
+                item.y = Math.random() * Math.max(0, monitor.height - height);
+
+                const speed = this._settings.get_int('bounce-speed');
+                item.velocityX = (speed + Math.random() * 50) * (Math.random() > 0.5 ? 1 : -1);
+                item.velocityY = (speed + Math.random() * 50) * (Math.random() > 0.5 ? 1 : -1);
+
+                this._updatePosition(item);
+                this._updateItemColor(item);
+            }
+
             return GLib.SOURCE_REMOVE;
         });
     }
 
-    _getLabelStyle(fontSize, showGlow) {
-        const color = this._colors[this._colorIndex];
+    _getLabelStyle(fontSize, showGlow, colorIndex) {
+        // first color and white as fallback
+        const color = this._colors[colorIndex] || this._colors[0] || [255, 255, 255];
         const colorStr = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
-        
+
         let style = `
             color: ${colorStr};
             font-size: ${fontSize}px;
             font-weight: bold;
             font-family: sans-serif;
         `;
-        
+
         if (showGlow) {
             style += `
                 text-shadow: 
@@ -357,7 +404,7 @@ export default class EclipseDVDExtension extends Extension {
                     0 0 30px ${colorStr};
             `;
         }
-        
+
         return style;
     }
 
@@ -396,10 +443,15 @@ export default class EclipseDVDExtension extends Extension {
             this._clockTimeout = null;
         }
         
-        // Update clock every second
+        // Update clock every second for each label for each monitor
         this._clockTimeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-            if (this._label && this._settings.get_string('display-mode') === 'clock') {
-                this._label.text = this._getCurrentTime();
+            if (this._settings.get_string('display-mode') === 'clock') {
+                const timeStr = this._getCurrentTime();
+                for (const item of this._items) {
+                    if (item.label) {
+                        item.label.text = timeStr;
+                    }
+                }
             }
             return GLib.SOURCE_CONTINUE;
         });
@@ -412,17 +464,30 @@ export default class EclipseDVDExtension extends Extension {
         }
     }
 
-    _updatePosition() {
-        if (this._actor && this._label) {
-            this._actor.set_position(Math.floor(this._x), Math.floor(this._y));
+    _updatePosition(item) {
+        if (!item.actor || !item.label) {
+            console.error('Eclipse: Missing actor or label for item');
+            return;
+        }
+        const monitor = Main.layoutManager.monitors.find(m => m.index === item.monitorIndex);
+        if (!monitor) {
+            console.error('Eclipse: Monitor with index ' + item.monitorIndex + ' not found');
+            return;
+        }
+        item.actor.set_position(monitor.x + Math.floor(item.x), monitor.y + Math.floor(item.y));
+    }
+
+    _updateItemColor(item) {
+        if (item.label) {
+            const fontSize = this._settings.get_int('font-size');
+            const showGlow = this._settings.get_boolean('show-glow');
+            item.label.style = this._getLabelStyle(fontSize, showGlow, item.colorIndex);
         }
     }
 
-    _updateColor() {
-        if (this._label) {
-            const fontSize = this._settings.get_int('font-size');
-            const showGlow = this._settings.get_boolean('show-glow');
-            this._label.style = this._getLabelStyle(fontSize, showGlow);
+    _updateAllColors() {
+        for (const item of this._items) {
+            this._updateItemColor(item);
         }
     }
 
@@ -436,7 +501,7 @@ export default class EclipseDVDExtension extends Extension {
             GLib.source_remove(this._timeout);
             this._timeout = null;
         }
-        
+
         this._timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, interval, () => {
             this._update(1 / fps);
             return GLib.SOURCE_CONTINUE;
@@ -444,146 +509,251 @@ export default class EclipseDVDExtension extends Extension {
     }
 
     _update(dt) {
-        const monitor = Main.layoutManager.primaryMonitor;
-        
-        if (!this._label || !this._actor) {
-            return;
+        const monitors = Main.layoutManager.monitors;
+
+        for (const item of this._items) {
+            if (!item.label || !item.actor) {
+                continue;
+            }
+
+            const monitor = monitors.find(m => m.index === item.monitorIndex);
+            if (!monitor) {
+                console.error('Eclipse: Monitor with index ' + item.monitorIndex + ' not found');
+                continue;
+            }
+
+            // Update position
+            item.x += item.velocityX * dt;
+            item.y += item.velocityY * dt;
+
+            const width = item.label.width;
+            const height = item.label.height;
+
+            let hitEdge = false;
+            let hitCorner = false;
+
+            // Bounce off edges for current monitor
+            if (item.x <= 0) {
+                item.x = 0;
+                item.velocityX = Math.abs(item.velocityX);
+                hitEdge = true;
+            }
+            else if (item.x + width >= monitor.width) {
+                item.x = monitor.width - width;
+                item.velocityX = -Math.abs(item.velocityX);
+                hitEdge = true;
+            }
+
+            if (item.y <= 0) {
+                item.y = 0;
+                item.velocityY = Math.abs(item.velocityY);
+                if (hitEdge) hitCorner = true;
+                hitEdge = true;
+            }
+            else if (item.y + height >= monitor.height) {
+                item.y = monitor.height - height;
+                item.velocityY = -Math.abs(item.velocityY);
+                if (hitEdge) hitCorner = true;
+                hitEdge = true;
+            }
+
+            // Change color on edge hit
+            if (hitEdge) {
+                item.colorIndex = (item.colorIndex + 1) % this._colors.length;
+                this._updateItemColor(item);
+            }
+
+            if (hitCorner) {
+                this._cornerHits++;
+            }
+
+            this._updatePosition(item);
         }
-        
-        // Update position
-        this._x += this._velocityX * dt;
-        this._y += this._velocityY * dt;
-        
-        const width = this._label.width;
-        const height = this._label.height;
-        
-        let hitEdge = false;
-        let hitCorner = false;
-        
-        // Bounce off edges
-        if (this._x <= 0) {
-            this._x = 0;
-            this._velocityX = Math.abs(this._velocityX);
-            hitEdge = true;
-        } else if (this._x + width >= monitor.width) {
-            this._x = monitor.width - width;
-            this._velocityX = -Math.abs(this._velocityX);
-            hitEdge = true;
-        }
-        
-        if (this._y <= 0) {
-            this._y = 0;
-            this._velocityY = Math.abs(this._velocityY);
-            if (hitEdge) hitCorner = true;
-            hitEdge = true;
-        } else if (this._y + height >= monitor.height) {
-            this._y = monitor.height - height;
-            this._velocityY = -Math.abs(this._velocityY);
-            if (hitEdge) hitCorner = true;
-            hitEdge = true;
-        }
-        
-        // Change color on edge hit
-        if (hitEdge) {
-            this._colorIndex = (this._colorIndex + 1) % this._colors.length;
-            this._updateColor();
-        }
-        
-        if (hitCorner) {
-            this._cornerHits++;
-        }
-        
-        this._updatePosition();
     }
 
     _connectSettings() {
         this._settings.connect('changed::display-mode', () => {
             if (this._isActive) {
-                this._recreateLabel();
+                this._recreateLabels();
             }
         });
-        
+
         this._settings.connect('changed::display-text', () => {
             if (this._isActive) {
-                this._recreateLabel();
+                this._recreateLabels();
             }
         });
-        
+
         this._settings.connect('changed::font-size', () => {
             if (this._isActive) {
-                this._updateColor();
+                this._updateAllColors();
             }
         });
-        
+
         this._settings.connect('changed::show-glow', () => {
             if (this._isActive) {
-                this._updateColor();
+                this._updateAllColors();
             }
         });
-        
+
         this._settings.connect('changed::bounce-speed', () => {
-            if (this._isActive && this._velocityX && this._velocityY) {
+            if (this._isActive) {
                 const speed = this._settings.get_int('bounce-speed');
-                const currentSpeed = Math.sqrt(this._velocityX ** 2 + this._velocityY ** 2);
-                const ratio = speed / currentSpeed;
-                this._velocityX *= ratio;
-                this._velocityY *= ratio;
+                for (const item of this._items) {
+                    if (!item.velocityX || !item.velocityY) {
+                        continue;
+                    }
+                    const currentSpeed = Math.sqrt(item.velocityX ** 2 + item.velocityY ** 2);
+                    const ratio = speed / currentSpeed;
+                    item.velocityX *= ratio;
+                    item.velocityY *= ratio;
+                }
             }
         });
-        
+
         this._settings.connect('changed::color-scheme', () => {
             this._loadColors();
             if (this._isActive) {
-                this._updateColor();
+                this._updateAllColors();
             }
         });
-        
+
         this._settings.connect('changed::clock-format', () => {
             if (this._isActive && this._settings.get_string('display-mode') === 'clock') {
                 // Update clock display immediately with new format
-                if (this._label) {
-                    this._label.text = this._getCurrentTime();
+                const timeStr = this._getCurrentTime();
+                for (const item of this._items) {
+                    if (item.label) {
+                        item.label.text = timeStr;
+                    }
                 }
             }
         });
-        
+
         this._settings.connect('changed::show-seconds', () => {
             if (this._isActive && this._settings.get_string('display-mode') === 'clock') {
                 // Update clock display immediately with/without seconds
-                if (this._label) {
-                    this._label.text = this._getCurrentTime();
+                const timeStr = this._getCurrentTime();
+                for (const item of this._items) {
+                    if (item.label) {
+                        item.label.text = timeStr;
+                    }
                 }
             }
         });
-        
+
         this._settings.connect('changed::idle-time', () => {
             this._updateIdleWatch();
         });
     }
 
-    _recreateLabel() {
+    _recreateLabels() {
         if (!this._isActive) {
             return;
         }
-        
-        const oldX = this._x;
-        const oldY = this._y;
-        const oldVelX = this._velocityX;
-        const oldVelY = this._velocityY;
-        
-        if (this._actor) {
-            this._actor.destroy();
-            this._actor = null;
-            this._label = null;
+
+        // Store {monitorIndex: {x, y, velocityX, velocityY, colorIndex}} for each monitor
+        const oldStateByMonitor = new Map();
+        for (const item of this._items) {
+            oldStateByMonitor.set(item.monitorIndex, {
+                x: item.x,
+                y: item.y,
+                velocityX: item.velocityX,
+                velocityY: item.velocityY,
+                colorIndex: item.colorIndex,
+            });
+            if (item.actor) {
+                item.actor.destroy();
+            }
+            item.actor = null;
+            item.label = null;
         }
-        
-        this._createLabel();
-        
-        this._x = oldX;
-        this._y = oldY;
-        this._velocityX = oldVelX;
-        this._velocityY = oldVelY;
-        
-        this._updatePosition();
+
+        this._createLabels();
+
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            for (const item of this._items) {
+                const old = oldStateByMonitor.get(item.monitorIndex);
+                // Restore old state for the monitor
+                if (old) {
+                    item.x = old.x;
+                    item.y = old.y;
+                    item.velocityX = old.velocityX;
+                    item.velocityY = old.velocityY;
+                    item.colorIndex = old.colorIndex;
+                    this._updatePosition(item);
+                    this._updateItemColor(item);
+                }
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _hideCursor() {
+        if (this._cursorInhibited || this._focusInhibited) {
+            return;
+        }
+
+        try {
+            // https://gjs-docs.gnome.org/meta17~17/meta.backend#method-get_cursor_tracker
+            this._cursorTracker = global.backend.get_cursor_tracker();
+        }
+        catch (e) {
+            console.error(`Eclipse: Failed to get cursor tracker: ` + e.message);
+            this._cursorTracker = null;
+        }
+
+        if (this._cursorTracker) {
+            try {
+                // https://gjs-docs.gnome.org/meta17~17/meta.cursortracker#method-inhibit_cursor_visibility
+                this._cursorTracker.inhibit_cursor_visibility();
+                this._cursorInhibited = true;
+            }
+            catch (e) {
+                console.error(`Eclipse: Failed to hide cursor: ` + e.message);
+            }
+        }
+
+        try {
+            // https://gjs-docs.gnome.org/clutter17~17/clutter.get_default_backend
+            // https://gjs-docs.gnome.org/clutter17~17/clutter.backend#method-get_default_seat
+            this._seat = Clutter.get_default_backend().get_default_seat();
+
+            if (this._seat) {
+                // https://gjs-docs.gnome.org/clutter17~17/clutter.seat#method-inhibit_unfocus
+                this._seat.inhibit_unfocus();
+                this._focusInhibited = true;
+            }
+        }
+        catch (e) {
+            console.error(`Eclipse: Failed to inhibit seat unfocus: ` + e.message);
+            this._seat = null;
+        }
+    }
+
+    _showCursor() {
+        if (this._cursorTracker && this._cursorInhibited) {
+            try {
+                this._cursorTracker.uninhibit_cursor_visibility();
+            }
+            catch (e) {
+                console.error(`Eclipse: Failed to show cursor: ` + e.message);
+            }
+        }
+
+        if (this._seat && this._focusInhibited) {
+            try {
+                this._seat.uninhibit_unfocus();
+            }
+            catch (e) {
+                console.error(`Eclipse: Failed to uninhibit seat unfocus: ` + e.message);
+            }
+        }
+
+        this._cursorWasHidden = false;
+        this._cursorInhibited = false;
+        this._focusInhibited = false;
+        this._cursorTracker = null;
+        this._seat = null;
     }
 }

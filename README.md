@@ -76,12 +76,6 @@ Once installed and enabled:
 3. **Dismiss**: Press any key, click mouse, or move mouse
 4. **Repeat**: After another idle period, it appears again
 
-**Quick Test** (recommended after installation):
-```bash
-./test.sh
-```
-This sets idle time to 10 seconds so you can see it immediately!
-
 ## ⚙️ Configuration
 
 Open Settings in two ways:
@@ -141,11 +135,11 @@ gnome-extensions prefs eclipse-dvd-screensaver@sudoyasir.github.com
 Eclipse/
 ├── metadata.json          # Extension metadata
 ├── extension.js           # Main extension code
-├── prefs.js              # Settings UI
-├── stylesheet.css        # Styling
-├── schemas/              # GSettings schemas
+├── prefs.js               # Settings UI
+├── stylesheet.css         # Styling
+├── schemas/               # GSettings schemas
 │   └── org.gnome.shell.extensions.eclipse-dvd.gschema.xml
-└── README.md             # This file
+└── README.md              # This file
 ```
 
 ### Testing
@@ -161,8 +155,7 @@ gnome-extensions enable eclipse-dvd-screensaver@sudoyasir.github.com
 ## 📝 Uninstallation
 
 ```bash
-gnome-extensions disable eclipse-dvd-screensaver@sudoyasir.github.com
-rm -rf ~/.local/share/gnome-shell/extensions/eclipse-dvd-screensaver@sudoyasir.github.com
+gnome-extensions uninstall eclipse-dvd-screensaver@sudoyasir.github.com
 ```
 
 ## 🐛 Troubleshooting
@@ -189,10 +182,7 @@ rm -rf ~/.local/share/gnome-shell/extensions/eclipse-dvd-screensaver@sudoyasir.g
 
 **"IdleMonitor.get_core is not a function" error:**
 - This has been fixed - reinstall the extension:
-  ```bash
-  ./uninstall.sh
-  ./install.sh
-  ```
+  [Uninstall](#-uninstallation) then [reinstall](#-installation)
 - Restart GNOME Shell after reinstalling
 
 ## 📄 License
